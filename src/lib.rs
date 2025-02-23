@@ -98,7 +98,10 @@ mod wallet;
 
 pub use bip39;
 pub use bitcoin;
+use bitcoin::absolute::LockTime;
+use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf};
 pub use lightning;
+use lightning::ln::types::ChannelId;
 pub use lightning_invoice;
 pub use lightning_liquidity;
 pub use lightning_types;
@@ -1173,6 +1176,47 @@ impl Node {
 			channel_config,
 			false,
 		)
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_build_psbt(
+		&self, output_script: ScriptBuf, amount: Amount, fee_rate: FeeRate, locktime: LockTime,
+	) -> Result<Psbt, Error> {
+		let mut psbt = self.wallet.build_psbt(output_script, amount, fee_rate, locktime)?;
+		self.wallet.add_utxos_to_psbt(&mut psbt)?;
+		Ok(psbt)
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_add_utxos_to_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
+		self.wallet.add_utxos_to_psbt(psbt)
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_sign_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
+		self.wallet.payjoin_sign_psbt(psbt)
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_set_current_channel_info(&self, channel_id: ChannelId, scriptbuf: ScriptBuf) -> Result<(), Error> {
+		self.wallet.set_current_channel_info(channel_id, scriptbuf)
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_reset_current_channel_info(&self) -> Result<(), Error> {
+		self.wallet.reset_current_channel_info()
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_get_current_channel_info(&self) -> Result<Option<(ChannelId, ScriptBuf)>, Error> {
+		self.wallet.get_current_channel_info()
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_fund_channel(&self, channel_id: ChannelId, counterparty_node_id: PublicKey, funding_psbt_transaction: Psbt) -> Result<(), Error> {
+		let tx = funding_psbt_transaction.extract_tx()?;
+		let _ = self.channel_manager.funding_transaction_generated(channel_id, counterparty_node_id, tx);
+		Ok(())
 	}
 
 	/// Connect to a node and open a new announced channel.

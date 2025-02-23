@@ -5,6 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
+use lightning::ln::types::ChannelId;
 use persist::KVStoreWalletPersister;
 
 use crate::logger::{log_debug, log_error, log_info, log_trace, LdkLogger, Logger};
@@ -38,13 +39,12 @@ use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hashes::Hash;
 use bitcoin::key::XOnlyPublicKey;
-use bitcoin::psbt::Psbt;
+use bitcoin::psbt::{Input, Output, Psbt};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::{
-	Amount, FeeRate, ScriptBuf, Transaction, TxOut, Txid, WPubkeyHash, WitnessProgram,
-	WitnessVersion,
+	Amount, FeeRate, ScriptBuf, Transaction, TxIn, TxOut, Txid, WPubkeyHash, WitnessProgram, WitnessVersion
 };
 
 use std::ops::Deref;
@@ -72,6 +72,8 @@ where
 	fee_estimator: E,
 	payment_store: Arc<PaymentStore<Arc<Logger>>>,
 	logger: L,
+	// Payjoin POC (arturgontijo)
+	current_channel_info: Arc<Mutex<Option<(ChannelId, ScriptBuf)>>>,
 }
 
 impl<B: Deref, E: Deref, L: Deref> Wallet<B, E, L>
@@ -87,7 +89,8 @@ where
 	) -> Self {
 		let inner = Mutex::new(wallet);
 		let persister = Mutex::new(wallet_persister);
-		Self { inner, persister, broadcaster, fee_estimator, payment_store, logger }
+		let current_channel_info = Arc::new(Mutex::new(None));
+		Self { inner, persister, broadcaster, fee_estimator, payment_store, logger, current_channel_info }
 	}
 
 	pub(crate) fn get_full_scan_request(&self) -> FullScanRequest<KeychainKind> {
@@ -528,6 +531,121 @@ where
 		}
 
 		Ok(txid)
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn build_psbt(
+		&self, output_script: ScriptBuf, amount: Amount, fee_rate: FeeRate, locktime: LockTime,
+	) -> Result<Psbt, Error> {
+		let mut locked_wallet = self.inner.lock().unwrap();
+		let mut tx_builder = locked_wallet.build_tx();
+
+		tx_builder.add_recipient(output_script, amount).fee_rate(fee_rate).nlocktime(locktime);
+
+		let psbt = match tx_builder.finish() {
+			Ok(psbt) => {
+				log_trace!(self.logger, "Created funding PSBT: {:?}", psbt);
+				psbt
+			},
+			Err(err) => {
+				log_error!(self.logger, "Failed to create funding transaction: {}", err);
+				return Err(err.into());
+			},
+		};
+
+		let mut locked_persister = self.persister.lock().unwrap();
+		locked_wallet.persist(&mut locked_persister).map_err(|e| {
+			log_error!(self.logger, "Failed to persist wallet: {}", e);
+			Error::PersistenceFailed
+		})?;
+
+		Ok(psbt)
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn add_utxos_to_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
+		let mut locked_wallet = self.inner.lock().unwrap();
+
+		let mut count = 0;
+    let mut receiver_utxos_value = Amount::from_sat(0);
+		let utxos: Vec<_> = locked_wallet.list_unspent().collect();
+    for utxo in utxos {
+				let mut inserted = false;
+				for psbt_input in psbt.unsigned_tx.input.clone() {
+					if psbt_input.previous_output.txid == utxo.outpoint.txid && psbt_input.previous_output.vout == utxo.outpoint.vout {
+						inserted = true;
+					}
+				}
+				if inserted {
+					continue;
+				}
+        println!(
+            "[Payjoin] Adding UTXO [txid={:?} | vout={:?}]",
+            utxo.outpoint.txid, utxo.outpoint.vout
+        );
+				if let Some(canonical_tx) = locked_wallet.transactions().find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid) {
+					let tx = (*canonical_tx.tx_node.tx).clone();
+					let input = TxIn {
+            previous_output: utxo.outpoint,
+            script_sig: Default::default(),
+            sequence: Default::default(),
+            witness: Default::default(),
+					};
+					psbt.inputs.push(Input {
+							non_witness_utxo: Some(tx),
+							..Default::default()
+					});
+					psbt.unsigned_tx.input.push(input);
+					receiver_utxos_value += utxo.txout.value;
+
+					count += 1;
+					if count >= 2 {
+							break;
+					}
+				};
+    }
+
+		let script_pubkey = locked_wallet
+				.reveal_next_address(KeychainKind::External)
+				.address
+				.script_pubkey();
+		let output = TxOut {
+				value: receiver_utxos_value,
+				script_pubkey,
+		};
+		psbt.outputs.push(Output {
+				..Default::default()
+		});
+		psbt.unsigned_tx.output.push(output);
+
+		Ok(())
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn payjoin_sign_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
+		let locked_wallet = self.inner.lock().unwrap();
+		locked_wallet.sign(psbt, SignOptions::default())?;
+		Ok(())
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn set_current_channel_info(&self, channel_id: ChannelId, scriptbuf: ScriptBuf) -> Result<(), Error> {
+		let mut unlocked = self.current_channel_info.lock().unwrap();
+    *unlocked = Some((channel_id, scriptbuf.clone()));
+		Ok(())
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn reset_current_channel_info(&self) -> Result<(), Error> {
+		let mut unlocked = self.current_channel_info.lock().unwrap();
+    *unlocked = None;
+		Ok(())
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn get_current_channel_info(&self) -> Result<Option<(ChannelId, ScriptBuf)>, Error> {
+		let unlocked = self.current_channel_info.lock().unwrap();
+		Ok(unlocked.clone())
 	}
 }
 
