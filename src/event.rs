@@ -492,7 +492,9 @@ where
 			} => {
 				// Payjoin POC (arturgontijo)
 				if let Some(_) = self.wallet.get_current_channel_info().unwrap() {
-					self.wallet.set_current_channel_info(temporary_channel_id, output_script).unwrap();
+					self.wallet
+						.set_current_channel_info(temporary_channel_id, output_script)
+						.unwrap();
 					return Ok(());
 				}
 				// Construct the raw transaction with the output that is paid the amount of the

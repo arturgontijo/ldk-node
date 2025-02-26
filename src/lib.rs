@@ -1198,7 +1198,9 @@ impl Node {
 	}
 
 	/// Payjoin POC (arturgontijo)
-	pub fn payjoin_set_current_channel_info(&self, channel_id: ChannelId, scriptbuf: ScriptBuf) -> Result<(), Error> {
+	pub fn payjoin_set_current_channel_info(
+		&self, channel_id: ChannelId, scriptbuf: ScriptBuf,
+	) -> Result<(), Error> {
 		self.wallet.set_current_channel_info(channel_id, scriptbuf)
 	}
 
@@ -1208,14 +1210,23 @@ impl Node {
 	}
 
 	/// Payjoin POC (arturgontijo)
-	pub fn payjoin_get_current_channel_info(&self) -> Result<Option<(ChannelId, ScriptBuf)>, Error> {
+	pub fn payjoin_get_current_channel_info(
+		&self,
+	) -> Result<Option<(ChannelId, ScriptBuf)>, Error> {
 		self.wallet.get_current_channel_info()
 	}
 
 	/// Payjoin POC (arturgontijo)
-	pub fn payjoin_fund_channel(&self, channel_id: ChannelId, counterparty_node_id: PublicKey, funding_psbt_transaction: Psbt) -> Result<(), Error> {
+	pub fn payjoin_fund_channel(
+		&self, channel_id: ChannelId, counterparty_node_id: PublicKey,
+		funding_psbt_transaction: Psbt,
+	) -> Result<(), Error> {
 		let tx = funding_psbt_transaction.extract_tx()?;
-		let _ = self.channel_manager.funding_transaction_generated(channel_id, counterparty_node_id, tx);
+		let _ = self.channel_manager.funding_transaction_generated(
+			channel_id,
+			counterparty_node_id,
+			tx,
+		);
 		Ok(())
 	}
 

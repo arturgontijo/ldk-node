@@ -44,7 +44,8 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::{
-	Amount, FeeRate, ScriptBuf, Transaction, TxIn, TxOut, Txid, WPubkeyHash, WitnessProgram, WitnessVersion
+	Amount, FeeRate, ScriptBuf, Transaction, TxIn, TxOut, Txid, WPubkeyHash, WitnessProgram,
+	WitnessVersion,
 };
 
 use std::ops::Deref;
@@ -90,7 +91,15 @@ where
 		let inner = Mutex::new(wallet);
 		let persister = Mutex::new(wallet_persister);
 		let current_channel_info = Arc::new(Mutex::new(None));
-		Self { inner, persister, broadcaster, fee_estimator, payment_store, logger, current_channel_info }
+		Self {
+			inner,
+			persister,
+			broadcaster,
+			fee_estimator,
+			payment_store,
+			logger,
+			current_channel_info,
+		}
 	}
 
 	pub(crate) fn get_full_scan_request(&self) -> FullScanRequest<KeychainKind> {
@@ -567,55 +576,50 @@ where
 		let mut locked_wallet = self.inner.lock().unwrap();
 
 		let mut count = 0;
-    let mut receiver_utxos_value = Amount::from_sat(0);
+		let mut receiver_utxos_value = Amount::from_sat(0);
 		let utxos: Vec<_> = locked_wallet.list_unspent().collect();
-    for utxo in utxos {
-				let mut inserted = false;
-				for psbt_input in psbt.unsigned_tx.input.clone() {
-					if psbt_input.previous_output.txid == utxo.outpoint.txid && psbt_input.previous_output.vout == utxo.outpoint.vout {
-						inserted = true;
-					}
+		for utxo in utxos {
+			let mut inserted = false;
+			for psbt_input in psbt.unsigned_tx.input.clone() {
+				if psbt_input.previous_output.txid == utxo.outpoint.txid
+					&& psbt_input.previous_output.vout == utxo.outpoint.vout
+				{
+					inserted = true;
 				}
-				if inserted {
-					continue;
-				}
-        println!(
-            "[Payjoin] Adding UTXO [txid={:?} | vout={:?}]",
-            utxo.outpoint.txid, utxo.outpoint.vout
-        );
-				if let Some(canonical_tx) = locked_wallet.transactions().find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid) {
-					let tx = (*canonical_tx.tx_node.tx).clone();
-					let input = TxIn {
-            previous_output: utxo.outpoint,
-            script_sig: Default::default(),
-            sequence: Default::default(),
-            witness: Default::default(),
-					};
-					psbt.inputs.push(Input {
-							non_witness_utxo: Some(tx),
-							..Default::default()
-					});
-					psbt.unsigned_tx.input.push(input);
-					receiver_utxos_value += utxo.txout.value;
-
-					count += 1;
-					if count >= 2 {
-							break;
-					}
+			}
+			if inserted {
+				continue;
+			}
+			println!(
+				"[Payjoin] Adding UTXO [txid={:?} | vout={:?}]",
+				utxo.outpoint.txid, utxo.outpoint.vout
+			);
+			if let Some(canonical_tx) = locked_wallet
+				.transactions()
+				.find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid)
+			{
+				let tx = (*canonical_tx.tx_node.tx).clone();
+				let input = TxIn {
+					previous_output: utxo.outpoint,
+					script_sig: Default::default(),
+					sequence: Default::default(),
+					witness: Default::default(),
 				};
-    }
+				psbt.inputs.push(Input { non_witness_utxo: Some(tx), ..Default::default() });
+				psbt.unsigned_tx.input.push(input);
+				receiver_utxos_value += utxo.txout.value;
 
-		let script_pubkey = locked_wallet
-				.reveal_next_address(KeychainKind::External)
-				.address
-				.script_pubkey();
-		let output = TxOut {
-				value: receiver_utxos_value,
-				script_pubkey,
-		};
-		psbt.outputs.push(Output {
-				..Default::default()
-		});
+				count += 1;
+				if count >= 2 {
+					break;
+				}
+			};
+		}
+
+		let script_pubkey =
+			locked_wallet.reveal_next_address(KeychainKind::External).address.script_pubkey();
+		let output = TxOut { value: receiver_utxos_value, script_pubkey };
+		psbt.outputs.push(Output { ..Default::default() });
 		psbt.unsigned_tx.output.push(output);
 
 		Ok(())
@@ -629,16 +633,18 @@ where
 	}
 
 	// Payjoin POC (arturgontijo)
-	pub(crate) fn set_current_channel_info(&self, channel_id: ChannelId, scriptbuf: ScriptBuf) -> Result<(), Error> {
+	pub(crate) fn set_current_channel_info(
+		&self, channel_id: ChannelId, scriptbuf: ScriptBuf,
+	) -> Result<(), Error> {
 		let mut unlocked = self.current_channel_info.lock().unwrap();
-    *unlocked = Some((channel_id, scriptbuf.clone()));
+		*unlocked = Some((channel_id, scriptbuf.clone()));
 		Ok(())
 	}
 
 	// Payjoin POC (arturgontijo)
 	pub(crate) fn reset_current_channel_info(&self) -> Result<(), Error> {
 		let mut unlocked = self.current_channel_info.lock().unwrap();
-    *unlocked = None;
+		*unlocked = None;
 		Ok(())
 	}
 
