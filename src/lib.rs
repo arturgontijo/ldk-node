@@ -1183,13 +1183,13 @@ impl Node {
 		&self, output_script: ScriptBuf, amount: Amount, fee_rate: FeeRate, locktime: LockTime,
 	) -> Result<Psbt, Error> {
 		let mut psbt = self.wallet.build_psbt(output_script, amount, fee_rate, locktime)?;
-		self.wallet.add_utxos_to_psbt(&mut psbt)?;
+		self.wallet.add_utxos_to_psbt_old(&mut psbt)?;
 		Ok(psbt)
 	}
 
 	/// Payjoin POC (arturgontijo)
 	pub fn payjoin_add_utxos_to_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
-		self.wallet.add_utxos_to_psbt(psbt)
+		self.wallet.add_utxos_to_psbt_old(psbt)
 	}
 
 	/// Payjoin POC (arturgontijo)
@@ -1228,6 +1228,55 @@ impl Node {
 			tx,
 		);
 		Ok(())
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_init_psbt_batch(
+		&self,
+		counterparty_node_id: PublicKey,
+		user_channel_id: &UserChannelId,
+		uniform_amount: Option<Amount>,
+		fee_per_participant: Amount,
+		max_participants: u8,
+		psbt_hex: String,
+	) -> Result<(), Error> {
+		// Check connection
+		self
+			.peer_manager
+			.peer_by_node_id(&counterparty_node_id)
+			.ok_or(Error::ConnectionFailed)?;
+
+		let open_channels = self.channel_manager.list_channels_with_counterparty(&counterparty_node_id);
+		if let Some(channel_details) =
+			open_channels.iter().find(|c| c.user_channel_id == user_channel_id.0)
+		{
+
+			let mut psbt = Psbt::deserialize(&hex::decode(psbt_hex).unwrap()).unwrap();
+			self.wallet.add_utxos_to_psbt(&mut psbt, 2, uniform_amount, fee_per_participant, false).unwrap();
+			let psbt_hex = psbt.serialize_hex();
+
+			let uniform_amount = uniform_amount.unwrap_or_default();
+
+			let _ = self.channel_manager.send_psbt(
+				counterparty_node_id,
+				channel_details.channel_id,
+				uniform_amount.to_sat(),
+				fee_per_participant.to_sat(),
+				max_participants,
+				vec![self.node_id()],
+				psbt_hex,
+				false,
+			);
+		}
+
+		Ok(())
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn payjoin_get_batch_psbts(
+		&self,
+	) -> Result<Vec<String>, Error> {
+		self.wallet.get_batch_psbts()
 	}
 
 	/// Connect to a node and open a new announced channel.

@@ -75,6 +75,8 @@ where
 	logger: L,
 	// Payjoin POC (arturgontijo)
 	current_channel_info: Arc<Mutex<Option<(ChannelId, ScriptBuf)>>>,
+	// Payjoin POC (arturgontijo)
+	batch_psbts: Arc<Mutex<Vec<String>>>,
 }
 
 impl<B: Deref, E: Deref, L: Deref> Wallet<B, E, L>
@@ -91,6 +93,7 @@ where
 		let inner = Mutex::new(wallet);
 		let persister = Mutex::new(wallet_persister);
 		let current_channel_info = Arc::new(Mutex::new(None));
+		let batch_psbts = Arc::new(Mutex::new(vec![]));
 		Self {
 			inner,
 			persister,
@@ -99,6 +102,7 @@ where
 			payment_store,
 			logger,
 			current_channel_info,
+			batch_psbts,
 		}
 	}
 
@@ -571,8 +575,102 @@ where
 		Ok(psbt)
 	}
 
+	pub(crate) fn add_utxos_to_psbt(
+    &self,
+    psbt: &mut Psbt,
+    max_count: u16,
+    uniform_amount: Option<Amount>,
+    fee: Amount,
+    payer: bool,
+	) -> Result<(), Box<dyn std::error::Error>> {
+		let mut locked_wallet = self.inner.lock().unwrap();
+	
+    let mut count = 0;
+    let mut receiver_utxos_value = Amount::from_sat(0);
+		let utxos: Vec<_> = locked_wallet.list_unspent().collect();
+    for utxo in utxos {
+        let mut inserted = false;
+        for input in psbt.unsigned_tx.input.clone() {
+            if input.previous_output.txid == utxo.outpoint.txid
+                && input.previous_output.vout == utxo.outpoint.vout
+            {
+                inserted = true;
+            }
+        }
+        if inserted {
+            continue;
+        }
+
+        if let Some(canonical_tx) = locked_wallet
+            .transactions()
+            .find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid)
+        {
+            let tx = (*canonical_tx.tx_node.tx).clone();
+            let input = TxIn {
+                previous_output: utxo.outpoint,
+                script_sig: Default::default(),
+                sequence: Default::default(),
+                witness: Default::default(),
+            };
+
+						println!(
+							"[Batch] Adding UTXO [txid={:?} | vout={:?} | amt={}]",
+							utxo.outpoint.txid, utxo.outpoint.vout, utxo.txout.value
+						);
+
+						psbt.inputs.push(Input {
+							non_witness_utxo: Some(tx),
+							..Default::default()
+						});
+            psbt.unsigned_tx.input.push(input);
+            receiver_utxos_value += utxo.txout.value;
+
+            count += 1;
+            if count >= max_count {
+                break;
+            }
+        };
+    }
+
+    let mut value = receiver_utxos_value;
+    if payer {
+        value -= fee;
+    } else {
+        value += fee
+    }
+
+    if let Some(uniform_amount) = uniform_amount {
+        let script_pubkey = locked_wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .script_pubkey();
+
+        let output = TxOut {
+            value: uniform_amount,
+            script_pubkey,
+        };
+        psbt.outputs.push(Output::default());
+        psbt.unsigned_tx.output.push(output);
+        value -= uniform_amount;
+    }
+
+    let script_pubkey = locked_wallet
+        .reveal_next_address(KeychainKind::External)
+        .address
+        .script_pubkey();
+
+    let output = TxOut {
+        value,
+        script_pubkey,
+    };
+    psbt.outputs.push(Output::default());
+    psbt.unsigned_tx.output.push(output);
+
+    Ok(())
+	}
+
 	// Payjoin POC (arturgontijo)
-	pub(crate) fn add_utxos_to_psbt(&self, psbt: &mut Psbt) -> Result<(), Error> {
+	pub(crate) fn add_utxos_to_psbt_old(&self, psbt: &mut Psbt) -> Result<(), Error> {
 		let mut locked_wallet = self.inner.lock().unwrap();
 
 		let mut count = 0;
@@ -653,6 +751,22 @@ where
 		let unlocked = self.current_channel_info.lock().unwrap();
 		Ok(unlocked.clone())
 	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn push_to_batch_psbts(&self, psbt_hex: String) -> Result<(), Error> {
+		let mut unlocked = self.batch_psbts.lock().unwrap();
+		unlocked.push(psbt_hex.clone());
+		Ok(())
+	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn get_batch_psbts(&self) -> Result<Vec<String>, Error> {
+		match self.batch_psbts.try_lock() {
+			Ok(mut psbts) => Ok(std::mem::take(&mut *psbts)),
+			Err(_) => Ok(vec![]),
+		}
+	}
+
 }
 
 impl<B: Deref, E: Deref, L: Deref> Listen for Wallet<B, E, L>

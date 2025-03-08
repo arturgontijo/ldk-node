@@ -43,7 +43,7 @@ use lightning_liquidity::lsps2::utils::compute_opening_fee;
 
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Amount, OutPoint};
+use bitcoin::{Amount, OutPoint, Psbt};
 
 use rand::{thread_rng, Rng};
 
@@ -483,6 +483,134 @@ where
 
 	pub async fn handle_event(&self, event: LdkEvent) -> Result<(), ReplayEvent> {
 		match event {
+			LdkEvent::PSBTSent {
+				next_node_id,
+				uniform_amount,
+				fee_per_participant,
+				max_participants,
+				participants,
+				psbt_hex,
+				sign,
+			} => {
+				let mut alias = "NO_ALIAS".to_string();
+				if let Some(node_alias) = self.config.node_alias {
+					alias = node_alias.to_string();
+				}
+				println!(
+					"[{}] PSBTSent    : next_node={:?} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
+					alias,
+					next_node_id,
+					uniform_amount,
+					fee_per_participant,
+					max_participants,
+					participants.len(),
+					psbt_hex.len(),
+					sign,
+				);
+			},
+			LdkEvent::PSBTReceived {
+				receiver_node_id,
+				prev_node_id,
+				uniform_amount,
+				fee_per_participant,
+				max_participants,
+				participants,
+				psbt_hex,
+				sign,
+			} => {
+				let mut alias = "NO_ALIAS".to_string();
+				if let Some(node_alias) = self.config.node_alias {
+					alias = node_alias.to_string();
+				}
+				println!(
+					"[{}] PSBTReceived: prev_node={:?} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
+					alias,
+					prev_node_id,
+					uniform_amount,
+					fee_per_participant,
+					max_participants,
+					participants.len(),
+					psbt_hex.len(),
+					sign,
+				);
+
+				let mut psbt = Psbt::deserialize(&hex::decode(psbt_hex).unwrap()).unwrap();
+
+				let mut participants = participants;
+				// Not a participant yet
+				if !sign && !participants.contains(&receiver_node_id) {
+					participants.push(receiver_node_id);
+					// Add node's inputs/outputs and route it to the next node
+					let fee = Amount::from_sat(fee_per_participant);
+
+					let uniform_amount_opt = if uniform_amount > 0 {
+						Some(Amount::from_sat(uniform_amount))
+					} else {
+						None
+					};
+
+					self.wallet.add_utxos_to_psbt(&mut psbt, 2, uniform_amount_opt, fee, false).unwrap();
+				}
+
+				let mut sign = sign;
+				if (participants.len() as u8) >= max_participants {
+					sign = true;
+					// Remove ourself from the list
+					let _ = participants.pop().unwrap();
+					println!("\n[{}] PSBTReceived: Starting the Signing workflow (send final PSBT back to initial node)...\n", alias);
+				}
+
+				if !sign {
+					let open_channels = self.channel_manager.list_channels();
+					for channel_details in open_channels {
+						if participants.contains(&channel_details.counterparty.node_id) {
+							continue;
+						}
+
+						let psbt_hex = psbt.serialize_hex();
+
+						let _ = self.channel_manager.send_psbt(
+							channel_details.counterparty.node_id,
+							channel_details.channel_id,
+							uniform_amount,
+							fee_per_participant,
+							max_participants,
+							participants,
+							psbt_hex,
+							false,
+						);
+						break;
+					}
+				} else {
+					println!("[{}] PSBTReceived: Signing...", alias);
+
+					// If max_participants was reached or there is no other node to participate, we trigger the signing workflow.
+					self.wallet.payjoin_sign_psbt(&mut psbt).unwrap();
+					let psbt_hex = psbt.serialize_hex();
+
+					// Do we need more signatures?
+					if participants.len() > 0 {
+						let next_signer_node_id = participants.pop().unwrap();
+
+						let open_channels = self.channel_manager.list_channels_with_counterparty(&next_signer_node_id);
+						if let Some(channel_details) = open_channels.first() {
+							let _ = self.channel_manager.send_psbt(
+								next_signer_node_id,
+								channel_details.channel_id,
+								uniform_amount,
+								fee_per_participant,
+								max_participants,
+								participants,
+								psbt_hex,
+								true,
+							);
+						}
+					} else {
+						println!("PSBTReceived: PSBT is ready to be broadcasted! (len={})", psbt_hex.len());
+						self.wallet.push_to_batch_psbts(psbt_hex).unwrap();
+					}
+				}
+			},
 			LdkEvent::FundingGenerationReady {
 				temporary_channel_id,
 				counterparty_node_id,
