@@ -606,7 +606,7 @@ where
 							);
 						}
 					} else {
-						println!("PSBTReceived: PSBT was signed by all participants! (len={})", psbt_hex.len());
+						println!("[{}] PSBTReceived: PSBT was signed by all participants! (len={})", alias, psbt_hex.len());
 						self.wallet.push_to_batch_psbts(psbt_hex).unwrap();
 					}
 				}
