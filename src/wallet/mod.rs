@@ -576,97 +576,80 @@ where
 	}
 
 	pub(crate) fn add_utxos_to_psbt(
-    &self,
-    psbt: &mut Psbt,
-    max_count: u16,
-    uniform_amount: Option<Amount>,
-    fee: Amount,
-    payer: bool,
+		&self, psbt: &mut Psbt, max_count: u16, uniform_amount: Option<Amount>, fee: Amount,
+		payer: bool,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let mut locked_wallet = self.inner.lock().unwrap();
-	
-    let mut count = 0;
-    let mut receiver_utxos_value = Amount::from_sat(0);
+
+		let mut count = 0;
+		let mut receiver_utxos_value = Amount::from_sat(0);
 		let utxos: Vec<_> = locked_wallet.list_unspent().collect();
-    for utxo in utxos {
-        let mut inserted = false;
-        for input in psbt.unsigned_tx.input.clone() {
-            if input.previous_output.txid == utxo.outpoint.txid
-                && input.previous_output.vout == utxo.outpoint.vout
-            {
-                inserted = true;
-            }
-        }
-        if inserted {
-            continue;
-        }
+		for utxo in utxos {
+			let mut inserted = false;
+			for input in psbt.unsigned_tx.input.clone() {
+				if input.previous_output.txid == utxo.outpoint.txid
+					&& input.previous_output.vout == utxo.outpoint.vout
+				{
+					inserted = true;
+				}
+			}
+			if inserted {
+				continue;
+			}
 
-        if let Some(canonical_tx) = locked_wallet
-            .transactions()
-            .find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid)
-        {
-            let tx = (*canonical_tx.tx_node.tx).clone();
-            let input = TxIn {
-                previous_output: utxo.outpoint,
-                script_sig: Default::default(),
-                sequence: Default::default(),
-                witness: Default::default(),
-            };
+			if let Some(canonical_tx) = locked_wallet
+				.transactions()
+				.find(|tx| tx.tx_node.compute_txid() == utxo.outpoint.txid)
+			{
+				let tx = (*canonical_tx.tx_node.tx).clone();
+				let input = TxIn {
+					previous_output: utxo.outpoint,
+					script_sig: Default::default(),
+					sequence: Default::default(),
+					witness: Default::default(),
+				};
 
-						println!(
-							"[Batch] Adding UTXO [txid={:?} | vout={:?} | amt={}]",
-							utxo.outpoint.txid, utxo.outpoint.vout, utxo.txout.value
-						);
+				println!(
+					"[Batch] Adding UTXO [txid={:?} | vout={:?} | amt={}]",
+					utxo.outpoint.txid, utxo.outpoint.vout, utxo.txout.value
+				);
 
-						psbt.inputs.push(Input {
-							non_witness_utxo: Some(tx),
-							..Default::default()
-						});
-            psbt.unsigned_tx.input.push(input);
-            receiver_utxos_value += utxo.txout.value;
+				psbt.inputs.push(Input { non_witness_utxo: Some(tx), ..Default::default() });
+				psbt.unsigned_tx.input.push(input);
+				receiver_utxos_value += utxo.txout.value;
 
-            count += 1;
-            if count >= max_count {
-                break;
-            }
-        };
-    }
+				count += 1;
+				if count >= max_count {
+					break;
+				}
+			};
+		}
 
-    let mut value = receiver_utxos_value;
-    if payer {
-        value -= fee;
-    } else {
-        value += fee
-    }
+		let mut value = receiver_utxos_value;
+		if payer {
+			value -= fee;
+		} else {
+			value += fee
+		}
 
-    if let Some(uniform_amount) = uniform_amount {
-        let script_pubkey = locked_wallet
-            .reveal_next_address(KeychainKind::External)
-            .address
-            .script_pubkey();
+		if let Some(uniform_amount) = uniform_amount {
+			let script_pubkey =
+				locked_wallet.reveal_next_address(KeychainKind::External).address.script_pubkey();
 
-        let output = TxOut {
-            value: uniform_amount,
-            script_pubkey,
-        };
-        psbt.outputs.push(Output::default());
-        psbt.unsigned_tx.output.push(output);
-        value -= uniform_amount;
-    }
+			let output = TxOut { value: uniform_amount, script_pubkey };
+			psbt.outputs.push(Output::default());
+			psbt.unsigned_tx.output.push(output);
+			value -= uniform_amount;
+		}
 
-    let script_pubkey = locked_wallet
-        .reveal_next_address(KeychainKind::External)
-        .address
-        .script_pubkey();
+		let script_pubkey =
+			locked_wallet.reveal_next_address(KeychainKind::External).address.script_pubkey();
 
-    let output = TxOut {
-        value,
-        script_pubkey,
-    };
-    psbt.outputs.push(Output::default());
-    psbt.unsigned_tx.output.push(output);
+		let output = TxOut { value, script_pubkey };
+		psbt.outputs.push(Output::default());
+		psbt.unsigned_tx.output.push(output);
 
-    Ok(())
+		Ok(())
 	}
 
 	// Payjoin POC (arturgontijo)
@@ -766,7 +749,6 @@ where
 			Err(_) => Ok(vec![]),
 		}
 	}
-
 }
 
 impl<B: Deref, E: Deref, L: Deref> Listen for Wallet<B, E, L>

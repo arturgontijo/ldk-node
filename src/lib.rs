@@ -1232,27 +1232,22 @@ impl Node {
 
 	/// Payjoin POC (arturgontijo)
 	pub fn payjoin_init_psbt_batch(
-		&self,
-		counterparty_node_id: PublicKey,
-		user_channel_id: &UserChannelId,
-		uniform_amount: Option<Amount>,
-		fee_per_participant: Amount,
-		max_participants: u8,
+		&self, counterparty_node_id: PublicKey, user_channel_id: &UserChannelId,
+		uniform_amount: Option<Amount>, fee_per_participant: Amount, max_participants: u8,
 		psbt_hex: String,
 	) -> Result<(), Error> {
 		// Check connection
-		self
-			.peer_manager
-			.peer_by_node_id(&counterparty_node_id)
-			.ok_or(Error::ConnectionFailed)?;
+		self.peer_manager.peer_by_node_id(&counterparty_node_id).ok_or(Error::ConnectionFailed)?;
 
-		let open_channels = self.channel_manager.list_channels_with_counterparty(&counterparty_node_id);
+		let open_channels =
+			self.channel_manager.list_channels_with_counterparty(&counterparty_node_id);
 		if let Some(channel_details) =
 			open_channels.iter().find(|c| c.user_channel_id == user_channel_id.0)
 		{
-
 			let mut psbt = Psbt::deserialize(&hex::decode(psbt_hex).unwrap()).unwrap();
-			self.wallet.add_utxos_to_psbt(&mut psbt, 2, uniform_amount, fee_per_participant, false).unwrap();
+			self.wallet
+				.add_utxos_to_psbt(&mut psbt, 2, uniform_amount, fee_per_participant, false)
+				.unwrap();
 			let psbt_hex = psbt.serialize_hex();
 
 			let uniform_amount = uniform_amount.unwrap_or_default();
@@ -1273,9 +1268,7 @@ impl Node {
 	}
 
 	/// Payjoin POC (arturgontijo)
-	pub fn payjoin_get_batch_psbts(
-		&self,
-	) -> Result<Vec<String>, Error> {
+	pub fn payjoin_get_batch_psbts(&self) -> Result<Vec<String>, Error> {
 		self.wallet.get_batch_psbts()
 	}
 

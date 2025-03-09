@@ -27,6 +27,7 @@ use crate::io::{
 };
 use crate::logger::{log_debug, log_error, log_info, LdkLogger};
 
+use bitcoin::psbt::{Input, Output};
 use lightning::events::bump_transaction::BumpTransactionEvent;
 use lightning::events::{ClosureReason, PaymentPurpose, ReplayEvent};
 use lightning::events::{Event as LdkEvent, PaymentFailureReason};
@@ -43,8 +44,9 @@ use lightning_liquidity::lsps2::utils::compute_opening_fee;
 
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Amount, OutPoint, Psbt};
+use bitcoin::{Amount, OutPoint, Psbt, TxIn, TxOut};
 
+use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 
 use core::future::Future;
@@ -549,14 +551,50 @@ where
 						None
 					};
 
-					self.wallet.add_utxos_to_psbt(&mut psbt, 2, uniform_amount_opt, fee, false).unwrap();
+					self.wallet
+						.add_utxos_to_psbt(&mut psbt, 2, uniform_amount_opt, fee, false)
+						.unwrap();
 				}
 
 				let mut sign = sign;
 				if (participants.len() as u8) >= max_participants {
 					sign = true;
+
 					// Remove ourself from the list
 					let _ = participants.pop().unwrap();
+
+					// Shuffling inputs/outputs
+					println!("\n[{}] PSBTReceived: Shuffling inputs/outputs before starting the Signing workflow...", alias);
+					let mut rng = thread_rng();
+					let mut paired_inputs: Vec<(Input, TxIn)> = psbt
+						.inputs
+						.iter()
+						.cloned()
+						.zip(psbt.unsigned_tx.input.iter().cloned())
+						.collect();
+					paired_inputs.shuffle(&mut rng);
+
+					// Unzip the shuffled pairs back into psbt
+					let (shuffled_psbt_inputs, shuffled_tx_inputs): (Vec<_>, Vec<_>) =
+						paired_inputs.into_iter().unzip();
+					psbt.inputs = shuffled_psbt_inputs;
+					psbt.unsigned_tx.input = shuffled_tx_inputs;
+
+					// Step 2: Shuffle outputs while keeping psbt.outputs and psbt.unsigned_tx.output aligned
+					let mut paired_outputs: Vec<(Output, TxOut)> = psbt
+						.outputs
+						.iter()
+						.cloned()
+						.zip(psbt.unsigned_tx.output.iter().cloned())
+						.collect();
+					paired_outputs.shuffle(&mut rng);
+
+					// Unzip the shuffled pairs back into psbt
+					let (shuffled_psbt_outputs, shuffled_tx_outputs): (Vec<_>, Vec<_>) =
+						paired_outputs.into_iter().unzip();
+					psbt.outputs = shuffled_psbt_outputs;
+					psbt.unsigned_tx.output = shuffled_tx_outputs;
+
 					println!("\n[{}] PSBTReceived: Starting the Signing workflow (send final PSBT back to initial node)...\n", alias);
 				}
 
@@ -592,7 +630,9 @@ where
 					if participants.len() > 0 {
 						let next_signer_node_id = participants.pop().unwrap();
 
-						let open_channels = self.channel_manager.list_channels_with_counterparty(&next_signer_node_id);
+						let open_channels = self
+							.channel_manager
+							.list_channels_with_counterparty(&next_signer_node_id);
 						if let Some(channel_details) = open_channels.first() {
 							let _ = self.channel_manager.send_psbt(
 								next_signer_node_id,
@@ -606,7 +646,11 @@ where
 							);
 						}
 					} else {
-						println!("[{}] PSBTReceived: PSBT was signed by all participants! (len={})", alias, psbt_hex.len());
+						println!(
+							"[{}] PSBTReceived: PSBT was signed by all participants! (len={})",
+							alias,
+							psbt_hex.len()
+						);
 						self.wallet.push_to_batch_psbts(psbt_hex).unwrap();
 					}
 				}
