@@ -598,45 +598,96 @@ where
 					println!("\n[{}] PSBTReceived: Starting the Signing workflow (send final PSBT back to initial node)...\n", alias);
 				}
 
+				let open_channels = self.channel_manager.list_channels();
+
 				if !sign {
-					let peers = self.peer_store.list_peers();
-					for peer in peers {
-						if participants.contains(&peer.node_id) {
+					let mut next_node_id = None;
+					for channel_details in &open_channels {
+						if participants.contains(&channel_details.counterparty.node_id) {
 							continue;
 						}
-
-						let psbt_hex = psbt.serialize_hex();
-
-						let _ = self.channel_manager.send_psbt(
-							peer.node_id,
-							uniform_amount,
-							fee_per_participant,
-							max_participants,
-							participants,
-							psbt_hex,
-							false,
-						);
+						next_node_id = Some(channel_details.counterparty.node_id);
 						break;
 					}
-				} else {
-					println!("[{}] PSBTReceived: Signing...", alias);
 
+					// We are already a participant and all our peers are too, so we need to route the PSBT back to someone else
+					if next_node_id.is_none() {
+						if open_channels.len() == 1 {
+							next_node_id = Some(open_channels[0].counterparty.node_id);
+						}
+						for channel_details in open_channels {
+							if channel_details.counterparty.node_id == prev_node_id {
+								continue;
+							}
+							next_node_id = Some(channel_details.counterparty.node_id);
+							break;
+						}
+					}
+
+					let psbt_hex = psbt.serialize_hex();
+
+					let _ = self.channel_manager.send_psbt(
+						next_node_id.unwrap(),
+						uniform_amount,
+						fee_per_participant,
+						max_participants,
+						participants.clone(),
+						psbt_hex,
+						false,
+					);
+				} else {
 					// If max_participants was reached or there is no other node to participate, we trigger the signing workflow.
-					self.wallet.payjoin_sign_psbt(&mut psbt).unwrap();
+
+					// Check if we need to sign or just route the PSBT to someone else
+					if !participants.contains(&receiver_node_id) {
+						println!("[{}] PSBTReceived: Signing...", alias);
+						self.wallet.payjoin_sign_psbt(&mut psbt).unwrap();
+					}
+
 					let psbt_hex = psbt.serialize_hex();
 
 					// Do we need more signatures?
 					if participants.len() > 0 {
 						let next_signer_node_id = participants.pop().unwrap();
-						let _ = self.channel_manager.send_psbt(
-							next_signer_node_id,
-							uniform_amount,
-							fee_per_participant,
-							max_participants,
-							participants,
-							psbt_hex,
-							true,
-						);
+						if self
+							.channel_manager
+							.list_channels_with_counterparty(&next_signer_node_id)
+							.len() > 0
+						{
+							let _ = self.channel_manager.send_psbt(
+								next_signer_node_id,
+								uniform_amount,
+								fee_per_participant,
+								max_participants,
+								participants,
+								psbt_hex,
+								true,
+							);
+						} else {
+							let mut inner_participants = participants.clone();
+							for node_id in participants.iter().rev() {
+								if self
+									.channel_manager
+									.list_channels_with_counterparty(&node_id)
+									.len() > 0
+								{
+									// We need to add back the next_signer_node_id to participants
+									if !inner_participants.contains(&next_signer_node_id) {
+										inner_participants.push(next_signer_node_id);
+									}
+									let _ = self.channel_manager.send_psbt(
+										node_id.clone(),
+										uniform_amount,
+										fee_per_participant,
+										max_participants,
+										inner_participants,
+										psbt_hex,
+										true,
+									);
+									break;
+								}
+							}
+						}
 					} else {
 						println!(
 							"[{}] PSBTReceived: PSBT was signed by all participants! (len={})",
