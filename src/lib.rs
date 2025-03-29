@@ -1232,37 +1232,33 @@ impl Node {
 
 	/// Payjoin POC (arturgontijo)
 	pub fn payjoin_init_psbt_batch(
-		&self, counterparty_node_id: PublicKey, user_channel_id: &UserChannelId,
-		uniform_amount: Option<Amount>, fee_per_participant: Amount, max_participants: u8,
-		psbt_hex: String,
+		&self, next_node_id: PublicKey, output_script: ScriptBuf, amount: Amount,
+		fee_rate: FeeRate, locktime: LockTime, uniform_amount: bool, fee_per_participant: Amount,
+		max_participants: u8, max_utxo_count: u16,
 	) -> Result<(), Error> {
 		// Check connection
-		self.peer_manager.peer_by_node_id(&counterparty_node_id).ok_or(Error::ConnectionFailed)?;
+		self.peer_manager.peer_by_node_id(&next_node_id).ok_or(Error::ConnectionFailed)?;
 
-		let open_channels =
-			self.channel_manager.list_channels_with_counterparty(&counterparty_node_id);
-		if let Some(channel_details) =
-			open_channels.iter().find(|c| c.user_channel_id == user_channel_id.0)
-		{
-			let mut psbt = Psbt::deserialize(&hex::decode(psbt_hex).unwrap()).unwrap();
-			self.wallet
-				.add_utxos_to_psbt(&mut psbt, 2, uniform_amount, fee_per_participant, false)
-				.unwrap();
-			let psbt_hex = psbt.serialize_hex();
+		let mut psbt = self.wallet.build_psbt(output_script, amount, fee_rate, locktime)?;
 
-			let uniform_amount = uniform_amount.unwrap_or_default();
+		// Initiator must cover all the batch fees
+		let total_fee = fee_per_participant * (max_participants as u64);
 
-			let _ = self.channel_manager.send_psbt(
-				counterparty_node_id,
-				channel_details.channel_id,
-				uniform_amount.to_sat(),
-				fee_per_participant.to_sat(),
-				max_participants,
-				vec![self.node_id()],
-				psbt_hex,
-				false,
-			);
-		}
+		self.wallet.add_utxos_to_psbt(&mut psbt, max_utxo_count, None, total_fee, true).unwrap();
+
+		let psbt_hex = psbt.serialize_hex();
+
+		let uniform_amount = if uniform_amount { amount } else { Amount::ZERO };
+
+		let _ = self.channel_manager.send_psbt(
+			next_node_id,
+			uniform_amount.to_sat(),
+			fee_per_participant.to_sat(),
+			max_participants + 1,
+			vec![self.node_id()],
+			psbt_hex,
+			false,
+		);
 
 		Ok(())
 	}

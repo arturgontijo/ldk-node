@@ -499,7 +499,7 @@ where
 					alias = node_alias.to_string();
 				}
 				println!(
-					"[{}] PSBTSent    : next_node={:?} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
+					"[{}] PSBTSent    : next_node={} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
 					alias,
 					next_node_id,
 					uniform_amount,
@@ -525,7 +525,7 @@ where
 					alias = node_alias.to_string();
 				}
 				println!(
-					"[{}] PSBTReceived: prev_node={:?} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
+					"[{}] PSBTReceived: prev_node={} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
 					alias,
 					prev_node_id,
 					uniform_amount,
@@ -599,17 +599,16 @@ where
 				}
 
 				if !sign {
-					let open_channels = self.channel_manager.list_channels();
-					for channel_details in open_channels {
-						if participants.contains(&channel_details.counterparty.node_id) {
+					let peers = self.peer_store.list_peers();
+					for peer in peers {
+						if participants.contains(&peer.node_id) {
 							continue;
 						}
 
 						let psbt_hex = psbt.serialize_hex();
 
 						let _ = self.channel_manager.send_psbt(
-							channel_details.counterparty.node_id,
-							channel_details.channel_id,
+							peer.node_id,
 							uniform_amount,
 							fee_per_participant,
 							max_participants,
@@ -629,22 +628,15 @@ where
 					// Do we need more signatures?
 					if participants.len() > 0 {
 						let next_signer_node_id = participants.pop().unwrap();
-
-						let open_channels = self
-							.channel_manager
-							.list_channels_with_counterparty(&next_signer_node_id);
-						if let Some(channel_details) = open_channels.first() {
-							let _ = self.channel_manager.send_psbt(
-								next_signer_node_id,
-								channel_details.channel_id,
-								uniform_amount,
-								fee_per_participant,
-								max_participants,
-								participants,
-								psbt_hex,
-								true,
-							);
-						}
+						let _ = self.channel_manager.send_psbt(
+							next_signer_node_id,
+							uniform_amount,
+							fee_per_participant,
+							max_participants,
+							participants,
+							psbt_hex,
+							true,
+						);
 					} else {
 						println!(
 							"[{}] PSBTReceived: PSBT was signed by all participants! (len={})",
