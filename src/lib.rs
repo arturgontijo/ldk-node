@@ -73,6 +73,7 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 mod balance;
+pub mod batch;
 mod builder;
 mod chain;
 pub mod config;
@@ -99,7 +100,7 @@ mod wallet;
 pub use bip39;
 pub use bitcoin;
 use bitcoin::absolute::LockTime;
-use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf};
+use bitcoin::{Amount, FeeRate, Psbt, ScriptBuf, Transaction};
 pub use lightning;
 use lightning::ln::types::ChannelId;
 pub use lightning_invoice;
@@ -1256,6 +1257,7 @@ impl Node {
 			fee_per_participant.to_sat(),
 			max_participants + 1,
 			vec![self.node_id()],
+			vec![self.node_id()],
 			psbt_hex,
 			false,
 		);
@@ -1266,6 +1268,11 @@ impl Node {
 	/// Payjoin POC (arturgontijo)
 	pub fn payjoin_get_batch_psbts(&self) -> Result<Vec<String>, Error> {
 		self.wallet.get_batch_psbts()
+	}
+
+	/// Payjoin POC (arturgontijo)
+	pub fn broadcast_transactions(&self, txs: &[&Transaction]) -> Result<(), Error> {
+		self.wallet.broadcast_transactions(txs)
 	}
 
 	/// Connect to a node and open a new announced channel.

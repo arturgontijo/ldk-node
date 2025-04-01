@@ -27,7 +27,8 @@ use crate::io::{
 };
 use crate::logger::{log_debug, log_error, log_info, LdkLogger};
 
-use bitcoin::psbt::{Input, Output};
+use crate::batch::process_batch_events;
+
 use lightning::events::bump_transaction::BumpTransactionEvent;
 use lightning::events::{ClosureReason, PaymentPurpose, ReplayEvent};
 use lightning::events::{Event as LdkEvent, PaymentFailureReason};
@@ -44,9 +45,8 @@ use lightning_liquidity::lsps2::utils::compute_opening_fee;
 
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Amount, OutPoint, Psbt, TxIn, TxOut};
+use bitcoin::{Amount, OutPoint};
 
-use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 
 use core::future::Future;
@@ -485,218 +485,8 @@ where
 
 	pub async fn handle_event(&self, event: LdkEvent) -> Result<(), ReplayEvent> {
 		match event {
-			LdkEvent::PSBTSent {
-				next_node_id,
-				uniform_amount,
-				fee_per_participant,
-				max_participants,
-				participants,
-				psbt_hex,
-				sign,
-			} => {
-				let mut alias = "NO_ALIAS".to_string();
-				if let Some(node_alias) = self.config.node_alias {
-					alias = node_alias.to_string();
-				}
-				println!(
-					"[{}] PSBTSent    : next_node={} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
-					alias,
-					next_node_id,
-					uniform_amount,
-					fee_per_participant,
-					max_participants,
-					participants.len(),
-					psbt_hex.len(),
-					sign,
-				);
-			},
-			LdkEvent::PSBTReceived {
-				receiver_node_id,
-				prev_node_id,
-				uniform_amount,
-				fee_per_participant,
-				max_participants,
-				participants,
-				psbt_hex,
-				sign,
-			} => {
-				let mut alias = "NO_ALIAS".to_string();
-				if let Some(node_alias) = self.config.node_alias {
-					alias = node_alias.to_string();
-				}
-				println!(
-					"[{}] PSBTReceived: prev_node={} | uni_amount={} | fee={} | max_p={} | participants={} | len={} | sign={}",
-					alias,
-					prev_node_id,
-					uniform_amount,
-					fee_per_participant,
-					max_participants,
-					participants.len(),
-					psbt_hex.len(),
-					sign,
-				);
-
-				let mut psbt = Psbt::deserialize(&hex::decode(psbt_hex).unwrap()).unwrap();
-
-				let mut participants = participants;
-				// Not a participant yet
-				if !sign && !participants.contains(&receiver_node_id) {
-					participants.push(receiver_node_id);
-					// Add node's inputs/outputs and route it to the next node
-					let fee = Amount::from_sat(fee_per_participant);
-
-					let uniform_amount_opt = if uniform_amount > 0 {
-						Some(Amount::from_sat(uniform_amount))
-					} else {
-						None
-					};
-
-					self.wallet
-						.add_utxos_to_psbt(&mut psbt, 2, uniform_amount_opt, fee, false)
-						.unwrap();
-				}
-
-				let mut sign = sign;
-				if (participants.len() as u8) >= max_participants {
-					sign = true;
-
-					// Remove ourself from the list
-					let _ = participants.pop().unwrap();
-
-					// Shuffling inputs/outputs
-					println!("\n[{}] PSBTReceived: Shuffling inputs/outputs before starting the Signing workflow...", alias);
-					let mut rng = thread_rng();
-					let mut paired_inputs: Vec<(Input, TxIn)> = psbt
-						.inputs
-						.iter()
-						.cloned()
-						.zip(psbt.unsigned_tx.input.iter().cloned())
-						.collect();
-					paired_inputs.shuffle(&mut rng);
-
-					// Unzip the shuffled pairs back into psbt
-					let (shuffled_psbt_inputs, shuffled_tx_inputs): (Vec<_>, Vec<_>) =
-						paired_inputs.into_iter().unzip();
-					psbt.inputs = shuffled_psbt_inputs;
-					psbt.unsigned_tx.input = shuffled_tx_inputs;
-
-					// Step 2: Shuffle outputs while keeping psbt.outputs and psbt.unsigned_tx.output aligned
-					let mut paired_outputs: Vec<(Output, TxOut)> = psbt
-						.outputs
-						.iter()
-						.cloned()
-						.zip(psbt.unsigned_tx.output.iter().cloned())
-						.collect();
-					paired_outputs.shuffle(&mut rng);
-
-					// Unzip the shuffled pairs back into psbt
-					let (shuffled_psbt_outputs, shuffled_tx_outputs): (Vec<_>, Vec<_>) =
-						paired_outputs.into_iter().unzip();
-					psbt.outputs = shuffled_psbt_outputs;
-					psbt.unsigned_tx.output = shuffled_tx_outputs;
-
-					println!("\n[{}] PSBTReceived: Starting the Signing workflow (send final PSBT back to initial node)...\n", alias);
-				}
-
-				let open_channels = self.channel_manager.list_channels();
-
-				if !sign {
-					let mut next_node_id = None;
-					for channel_details in &open_channels {
-						if participants.contains(&channel_details.counterparty.node_id) {
-							continue;
-						}
-						next_node_id = Some(channel_details.counterparty.node_id);
-						break;
-					}
-
-					// We are already a participant and all our peers are too, so we need to route the PSBT back to someone else
-					if next_node_id.is_none() {
-						if open_channels.len() == 1 {
-							next_node_id = Some(open_channels[0].counterparty.node_id);
-						}
-						for channel_details in open_channels {
-							if channel_details.counterparty.node_id == prev_node_id {
-								continue;
-							}
-							next_node_id = Some(channel_details.counterparty.node_id);
-							break;
-						}
-					}
-
-					let psbt_hex = psbt.serialize_hex();
-
-					let _ = self.channel_manager.send_psbt(
-						next_node_id.unwrap(),
-						uniform_amount,
-						fee_per_participant,
-						max_participants,
-						participants.clone(),
-						psbt_hex,
-						false,
-					);
-				} else {
-					// If max_participants was reached or there is no other node to participate, we trigger the signing workflow.
-
-					// Check if we need to sign or just route the PSBT to someone else
-					if !participants.contains(&receiver_node_id) {
-						println!("[{}] PSBTReceived: Signing...", alias);
-						self.wallet.payjoin_sign_psbt(&mut psbt).unwrap();
-					}
-
-					let psbt_hex = psbt.serialize_hex();
-
-					// Do we need more signatures?
-					if participants.len() > 0 {
-						let next_signer_node_id = participants.pop().unwrap();
-						if self
-							.channel_manager
-							.list_channels_with_counterparty(&next_signer_node_id)
-							.len() > 0
-						{
-							let _ = self.channel_manager.send_psbt(
-								next_signer_node_id,
-								uniform_amount,
-								fee_per_participant,
-								max_participants,
-								participants,
-								psbt_hex,
-								true,
-							);
-						} else {
-							let mut inner_participants = participants.clone();
-							for node_id in participants.iter().rev() {
-								if self
-									.channel_manager
-									.list_channels_with_counterparty(&node_id)
-									.len() > 0
-								{
-									// We need to add back the next_signer_node_id to participants
-									if !inner_participants.contains(&next_signer_node_id) {
-										inner_participants.push(next_signer_node_id);
-									}
-									let _ = self.channel_manager.send_psbt(
-										node_id.clone(),
-										uniform_amount,
-										fee_per_participant,
-										max_participants,
-										inner_participants,
-										psbt_hex,
-										true,
-									);
-									break;
-								}
-							}
-						}
-					} else {
-						println!(
-							"[{}] PSBTReceived: PSBT was signed by all participants! (len={})",
-							alias,
-							psbt_hex.len()
-						);
-						self.wallet.push_to_batch_psbts(psbt_hex).unwrap();
-					}
-				}
+			LdkEvent::PSBTSent { .. } | LdkEvent::PSBTReceived { .. } => {
+				process_batch_events(event, &self.config, &self.channel_manager, &self.wallet)
 			},
 			LdkEvent::FundingGenerationReady {
 				temporary_channel_id,

@@ -749,6 +749,12 @@ where
 			Err(_) => Ok(vec![]),
 		}
 	}
+
+	// Payjoin POC (arturgontijo)
+	pub(crate) fn broadcast_transactions(&self, txs: &[&Transaction]) -> Result<(), Error> {
+		self.broadcaster.broadcast_transactions(txs);
+		Ok(())
+	}
 }
 
 impl<B: Deref, E: Deref, L: Deref> Listen for Wallet<B, E, L>
