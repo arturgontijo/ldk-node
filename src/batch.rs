@@ -80,10 +80,7 @@ pub(crate) fn process_batch_events(
 			let mut participants = participants;
 
 			// Not a participant yet
-			if !sign
-				&& !participants.contains(&receiver_node_id)
-				&& alias != "ldk-node-3".to_string()
-			{
+			if !sign && !participants.contains(&receiver_node_id) {
 				participants.push(receiver_node_id);
 				// Add node's inputs/outputs and route it to the next node
 				let fee = Amount::from_sat(fee_per_participant);
